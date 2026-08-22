@@ -1,0 +1,8 @@
+# Python 3.14 compatible — verified 2026-08-22
+# Use modern psycopg v3 (binary) — has wheels for Python 3.14, avoids psycopg2 build issues
+psycopg[binary]==3.3.4
+pandas==2.3.3
+numpy==2.5.2
+scikit-learn==1.9.0
+networkx==3.6.1
+python-dotenv==1.2.2
