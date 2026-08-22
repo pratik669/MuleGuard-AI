@@ -24,7 +24,7 @@ DB_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:543
 
 # Configurable knobs
 MAX_CYCLE_LEN = 4
-MAX_CYCLE_ENUM = 500
+MAX_CYCLE_ENUM = 2000
 MAX_CHAIN_LEN = 4          # nodes, i.e. 3 edges
 MAX_CHAIN_GAP_MIN = 180    # max minutes between consecutive hops in a chain
 MAX_CHAINS_REPORTED = 200

@@ -1,90 +1,423 @@
 """
-Risk engine - combines ML + Rules + Graph into explainable risk score.
-Phase 2: ML 40% + Rules 30% + Graph 30% (initial demo weights, not statistically validated).
-Graph score reflects fan-in/out, chains, cycles, centrality. See graph_analysis.py.
-"""
-import pandas as pd
-import json
+MuleGuard Risk Engine - Phase 3
 
-WEIGHTS = {"ml": 0.4, "rule": 0.3, "graph": 0.3}  # sum 1.0, configurable
-LEVELS = [(80,"CRITICAL"), (60,"HIGH"), (30,"MEDIUM"), (0,"LOW")]
+Combines:
+    ML anomaly score
+    Behavioral rule score
+    Graph intelligence score
+    Money-flow intelligence score
+
+Final score:
+    ML       = 35%
+    Rules    = 25%
+    Graph    = 20%
+    Flow     = 20%
+
+These are initial experimental weights for the hackathon MVP.
+They are not statistically validated.
+"""
+
+import pandas as pd
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+WEIGHTS = {
+    "ml": 0.35,
+    "rule": 0.25,
+    "graph": 0.20,
+    "flow": 0.20,
+}
+
+LEVELS = [
+    (80, "CRITICAL"),
+    (60, "HIGH"),
+    (30, "MEDIUM"),
+    (0, "LOW"),
+]
+
+
+# ============================================================
+# RISK CLASSIFICATION
+# ============================================================
 
 def classify(score):
-    for thresh, lvl in LEVELS:
-        if score >= thresh:
-            return lvl
+    for threshold, level in LEVELS:
+        if score >= threshold:
+            return level
+
     return "LOW"
 
-def combine_scores(ml_df, rule_df, graph_df=None, graph_score_default=0):
+
+# ============================================================
+# COMBINE EVIDENCE
+# ============================================================
+
+def combine_scores(
+    ml_df,
+    rule_df,
+    graph_df=None,
+    flow_df=None,
+    graph_score_default=0,
+    flow_score_default=0,
+):
+
     """
-    ml_df: account_id, ml_score
-    rule_df: account_id, rule_score, triggered_rules, reasons
-    graph_df: account_id, graph_score, graph_reasons (from graph_analysis.analyze_graph) - optional
-    Returns: account_id, ml_score, rule_score, graph_score, final_score, risk_level, reasons
+    Combine ML + Rules + Graph + Flow.
+
+    Required columns:
+
+    ml_df:
+        account_id
+        ml_score
+
+    rule_df:
+        account_id
+        rule_score
+        triggered_rules
+        reasons
+
+    graph_df:
+        account_id
+        graph_score
+        graph_reasons
+
+    flow_df:
+        account_id
+        flow_score
+        flow_reasons
     """
-    merged = pd.merge(ml_df, rule_df, on="account_id", how="outer")
-    merged["rule_score"] = merged["rule_score"].fillna(0)
+
+    # --------------------------------------------------------
+    # ML + Rules
+    # --------------------------------------------------------
+
+    merged = pd.merge(
+        ml_df,
+        rule_df,
+        on="account_id",
+        how="outer",
+    )
+
     merged["ml_score"] = merged["ml_score"].fillna(0)
+    merged["rule_score"] = merged["rule_score"].fillna(0)
+
+    # --------------------------------------------------------
+    # Graph
+    # --------------------------------------------------------
+
     if graph_df is not None and not graph_df.empty:
-        # only take needed cols
-        g = graph_df[["account_id", "graph_score", "graph_reasons"]]
-        merged = pd.merge(merged, g, on="account_id", how="left")
-        merged["graph_score"] = merged["graph_score"].fillna(graph_score_default)
-        merged["graph_reasons"] = merged["graph_reasons"].apply(lambda x: x if isinstance(x, list) else [])
+
+        graph_columns = [
+            "account_id",
+            "graph_score",
+            "graph_reasons",
+        ]
+
+        available = [
+            col
+            for col in graph_columns
+            if col in graph_df.columns
+        ]
+
+        g = graph_df[available].copy()
+
+        merged = pd.merge(
+            merged,
+            g,
+            on="account_id",
+            how="left",
+        )
+
+        if "graph_score" not in merged.columns:
+            merged["graph_score"] = graph_score_default
+
+        if "graph_reasons" not in merged.columns:
+            merged["graph_reasons"] = [[] for _ in range(len(merged))]
+
     else:
+
         merged["graph_score"] = graph_score_default
         merged["graph_reasons"] = [[] for _ in range(len(merged))]
 
-    out_rows = []
-    for _, r in merged.iterrows():
-        ml_s = float(r["ml_score"])
-        rule_s = float(r["rule_score"])
-        graph_s = float(r["graph_score"])
-        final = round(WEIGHTS["ml"]*ml_s + WEIGHTS["rule"]*rule_s + WEIGHTS["graph"]*graph_s, 2)
-        final = max(0, min(100, final))
-        level = classify(final)
-        # Build explainable reasons: ML + Rules + Graph
+    merged["graph_score"] = merged["graph_score"].fillna(
+        graph_score_default
+    )
+
+    merged["graph_reasons"] = merged["graph_reasons"].apply(
+        lambda x: x if isinstance(x, list) else []
+    )
+
+    # --------------------------------------------------------
+    # Flow
+    # --------------------------------------------------------
+
+    if flow_df is not None and not flow_df.empty:
+
+        flow_columns = [
+            "account_id",
+            "flow_score",
+            "flow_reasons",
+        ]
+
+        available = [
+            col
+            for col in flow_columns
+            if col in flow_df.columns
+        ]
+
+        f = flow_df[available].copy()
+
+        merged = pd.merge(
+            merged,
+            f,
+            on="account_id",
+            how="left",
+        )
+
+        if "flow_score" not in merged.columns:
+            merged["flow_score"] = flow_score_default
+
+        if "flow_reasons" not in merged.columns:
+            merged["flow_reasons"] = [[] for _ in range(len(merged))]
+
+    else:
+
+        merged["flow_score"] = flow_score_default
+        merged["flow_reasons"] = [[] for _ in range(len(merged))]
+
+    merged["flow_score"] = merged["flow_score"].fillna(
+        flow_score_default
+    )
+
+    merged["flow_reasons"] = merged["flow_reasons"].apply(
+        lambda x: x if isinstance(x, list) else []
+    )
+
+    # ========================================================
+    # FINAL RISK CALCULATION
+    # ========================================================
+
+    output = []
+
+    for _, row in merged.iterrows():
+
+        account_id = row["account_id"]
+
+        ml_score = float(row["ml_score"])
+        rule_score = float(row["rule_score"])
+        graph_score = float(row["graph_score"])
+        flow_score = float(row["flow_score"])
+
+        # ----------------------------------------------------
+        # Weighted final score
+        # ----------------------------------------------------
+
+        final_score = (
+            WEIGHTS["ml"] * ml_score
+            + WEIGHTS["rule"] * rule_score
+            + WEIGHTS["graph"] * graph_score
+            + WEIGHTS["flow"] * flow_score
+        )
+
+        final_score = max(
+            0,
+            min(
+                100,
+                round(final_score, 2),
+            ),
+        )
+
+        risk_level = classify(final_score)
+
+        # ====================================================
+        # EXPLAINABLE REASONS
+        # ====================================================
+
         reasons = []
-        if ml_s >= 70:
-            reasons.append(f"High anomaly score ({ml_s:.0f}/100) vs peer accounts - unusual behavior.")
-        elif ml_s >= 50:
-            reasons.append(f"Moderate anomaly score ({ml_s:.0f}/100) - deviates from normal patterns.")
-        rule_reasons = r["reasons"] if isinstance(r["reasons"], list) else []
-        if rule_reasons and rule_reasons[0] != "No behavioral rule triggered - activity appears normal.":
-            reasons.extend(rule_reasons)
-        elif ml_s < 30 and not (isinstance(r.get("graph_reasons"), list) and len(r.get("graph_reasons"))>0):
-            reasons.append("Activity within normal range for peer group.")
-        elif ml_s < 50:
-            reasons.append("No strong behavioral flag, but anomaly score warrants review.")
-        # Graph explanations (backed by actual calculations)
-        graph_reasons = r.get("graph_reasons", [])
-        if isinstance(graph_reasons, list) and graph_reasons:
-            reasons.extend(graph_reasons)
-        # cap and keep most informative (ML + top rules + graph)
+
+        # ----------------------------------------------------
+        # ML explanation
+        # ----------------------------------------------------
+
+        if ml_score >= 70:
+
+            reasons.append(
+                f"High anomaly score ({ml_score:.0f}/100) "
+                f"indicating unusual account behavior."
+            )
+
+        elif ml_score >= 50:
+
+            reasons.append(
+                f"Moderate anomaly score ({ml_score:.0f}/100) "
+                f"showing deviation from peer behavior."
+            )
+
+        # ----------------------------------------------------
+        # Rule explanations
+        # ----------------------------------------------------
+
+        rule_reasons = row.get("reasons", [])
+
+        if isinstance(rule_reasons, list):
+
+            for reason in rule_reasons:
+
+                if (
+                    reason
+                    and reason
+                    != "No behavioral rule triggered - activity appears normal."
+                ):
+
+                    reasons.append(str(reason))
+
+        # ----------------------------------------------------
+        # Graph explanations
+        # ----------------------------------------------------
+
+        graph_reasons = row.get(
+            "graph_reasons",
+            [],
+        )
+
+        if isinstance(graph_reasons, list):
+
+            for reason in graph_reasons:
+
+                if reason:
+                    reasons.append(str(reason))
+
+        # ----------------------------------------------------
+        # Flow explanations
+        # ----------------------------------------------------
+
+        flow_reasons = row.get(
+            "flow_reasons",
+            [],
+        )
+
+        if isinstance(flow_reasons, list):
+
+            for reason in flow_reasons:
+
+                if reason:
+                    reasons.append(str(reason))
+
+        # ----------------------------------------------------
+        # Fallback explanation
+        # ----------------------------------------------------
+
+        if not reasons:
+
+            reasons.append(
+                "No strong risk indicators detected."
+            )
+
+        # Keep explanations manageable
         reasons = reasons[:8]
 
-        out_rows.append({
-            "account_id": r["account_id"],
-            "ml_score": round(ml_s,2),
-            "rule_score": round(rule_s,2),
-            "graph_score": round(graph_s,2),
-            "final_score": round(final,2),
-            "risk_level": level,
-            "reasons": reasons,
-            "triggered_rules": r.get("triggered_rules", [])
-        })
-    return pd.DataFrame(out_rows)
+        # ====================================================
+        # OUTPUT ROW
+        # ====================================================
+
+        output.append(
+            {
+                "account_id": account_id,
+
+                "ml_score": round(
+                    ml_score,
+                    2,
+                ),
+
+                "rule_score": round(
+                    rule_score,
+                    2,
+                ),
+
+                "graph_score": round(
+                    graph_score,
+                    2,
+                ),
+
+                "flow_score": round(
+                    flow_score,
+                    2,
+                ),
+
+                "final_score": final_score,
+
+                "risk_level": risk_level,
+
+                "reasons": reasons,
+
+                "triggered_rules": (
+                    row.get(
+                        "triggered_rules",
+                        [],
+                    )
+                ),
+            }
+        )
+
+    return pd.DataFrame(output)
+
+
+# ============================================================
+# STANDALONE TEST
+# ============================================================
 
 if __name__ == "__main__":
+
     from features import extract_features_from_db
     from model import score_accounts
     from rules import evaluate_rules
     from graph_analysis import analyze_graph
+    from flow_intelligence import analyze_flow
+
+    print("=" * 60)
+    print("MuleGuard Risk Engine Test")
+    print("=" * 60)
+
     df = extract_features_from_db()
+
     ml = score_accounts(df)
+
     rules = evaluate_rules(df)
+
     graph_df, stats, _ = analyze_graph()
-    risk = combine_scores(ml, rules, graph_df)
-    print(risk.sort_values("final_score", ascending=False).head(10).to_string(index=False))
-    print(risk["risk_level"].value_counts().to_string())
-    print("Weights:", WEIGHTS)
+
+    flow_df = analyze_flow()
+
+    risk = combine_scores(
+        ml_df=ml,
+        rule_df=rules,
+        graph_df=graph_df,
+        flow_df=flow_df,
+    )
+
+    print("\nTop 10 highest-risk accounts:")
+
+    print(
+        risk
+        .sort_values(
+            "final_score",
+            ascending=False,
+        )
+        .head(10)
+        .to_string(index=False)
+    )
+
+    print("\nRisk distribution:")
+
+    print(
+        risk["risk_level"]
+        .value_counts()
+        .to_string()
+    )
+
+    print("\nWeights:")
+
+    print(WEIGHTS)
